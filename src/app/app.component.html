@@ -2,11 +2,14 @@
 
 <html>
     <head>
-        <title>Titans</title>
+        <title>Titans MIPS simulator</title>
 		<meta name="viewport" content="width=device-width, initial-scale=1">
+      <meta name="description" content="MIPS assembly compiler">
+      <meta name="keywords" content="MIPS, assembly, compiler, simulator">
 		<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css">
         <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.0/css/bootstrap.min.css" integrity="sha384-9aIt2nRpC12Uk9gS9baDl411NQApFmC26EwAOH8WgZl5MYYxFfc+NcPb1dKGj7Sk" crossorigin="anonymous">
-        
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@300&display=swap;">
+      <script data-ad-client="ca-pub-4603054563804436" async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
     </head>
     <body>
     	<div class="container mt-5">
@@ -29,9 +32,15 @@
 					<button type="button" style="color:grey;" class="btn btn-default b">
 						  <span class="glyphicon glyphicon-th-list"></span> Single Step
 					</button>
+
+					<input type="checkbox" id="checkbox" [(ngModel)]="is_forwarded">
+
+					<label for="checkbox" style="color: grey; font-size: small; font-family: caveat;"> &nbsp; Enable Forwarding</label>
+
 					 <input type="file" (change)="fileChanged($event)" style="color:grey;" id="myFile" name="filename"> 
 					 <button type="button" style="color:grey;"  class="btn btn-default b" 
 					 (click)="uploadDocument()">Upload File</button>
+					 
 				</div>
 				</div>
 			</div>
@@ -61,16 +70,73 @@
 				<div class="col-md-12 mt-4 py-2">
 					<div class="shadow container bg-light">
                         <br>
-						<table>
-                            <tr>
-                                <th>Register Name&nbsp;&nbsp;</th>
-                                <th>value</th>
-                            </tr>
-                            <tr *ngFor="let item of registers;let myindex=index;">
-                                <td>R{{myindex}} </td>
-                                <td>{{item}}</td>
-                            </tr>
-                        </table>
+						<button type="button" style="color:darkred;float: right;padding-right: 1em;margin-bottom: 1em;" class="btn btn-default b" (click)="switch()" >
+							<span class="glyphicon glyphicon-refresh"></span> switch
+							  </button>
+						<div *ngIf="!opencache">
+							<table >
+								<tr>
+									<th>Register Name&nbsp;&nbsp;</th>
+									<th>value</th>
+									
+								</tr>
+								<tr *ngFor="let item of registers;let myindex=index;">
+									<td>R{{myindex}} </td>
+									<td>{{item}}</td>
+								</tr>
+							</table>
+						</div>
+						<div *ngIf="opencache">
+							<table >
+								<tr>
+									<th>Cache&nbsp;&nbsp;</th>
+									<th> </th>
+									
+								</tr>
+								<tr>
+									<th>parameter&nbsp;&nbsp;&nbsp;&nbsp;</th>
+									<th> &nbsp;&nbsp;value </th>
+									
+								</tr>
+								<tr>
+									<td>Cache&nbsp;size(L1)</td>
+									<td>&nbsp;&nbsp;	<input type="number" style="width: 40%; height: 50%; margin-bottom: 0.5em;" [(ngModel)]="l1size"> bytes	</td>
+								</tr>
+								<tr>
+									<td>Block&nbsp;size(L1)</td>
+									<td>&nbsp;&nbsp;	<input type="number" style="width: 40%; height: 50%; margin-bottom: 0.5em;" [(ngModel)]="l1blksize"> x4bytes	</td>
+								</tr>
+								<tr>
+									<td>Associativity(L1)</td>
+									<td>&nbsp;&nbsp;	<input type="number" style="width: 40%; height: 50%; margin-bottom: 0.5em;" [(ngModel)]="l1associativity"> units	</td>
+								</tr>
+								<tr>
+									<td>Access&nbsp;latency(L1)</td>
+									<td>&nbsp;&nbsp;	<input type="number" style="width: 40%; height: 50%; margin-bottom: 0.5em;" [(ngModel)]="l1latency"> cycles	</td>
+								</tr>
+								<tr>
+									<td>Cache&nbsp;size(L2)</td>
+									<td>&nbsp;&nbsp;	<input type="number" style="width: 40%; height: 50%; margin-bottom: 0.5em;" [(ngModel)]="l2size"> bytes	</td>
+								</tr>
+								<tr>
+									<td>Block&nbsp;size(L2)</td>
+									<td>&nbsp;&nbsp;	<input type="number" style="width: 40%; height: 50%; margin-bottom: 0.5em;" [(ngModel)]="l2blksize"> x4bytes	</td>
+								</tr>
+								<tr>
+									<td>Associativity(L2)</td>
+									<td>&nbsp;&nbsp;	<input type="number" style="width: 40%; height: 50%; margin-bottom: 0.5em;" [(ngModel)]="l2associativity"> units	</td>
+								</tr>
+								<tr>
+									<td>Access&nbsp;latency(L2)</td>
+									<td>&nbsp;&nbsp;	<input type="number" style="width: 40%; height: 50%; margin-bottom: 0.5em;" [(ngModel)]="l2latency"> cycles	</td>
+								</tr>
+								<!-- <tr *ngFor="let item of registers;let myindex=index;">
+									<td>R{{myindex}} </td>
+									<td>{{item}}</td>
+								</tr> -->
+							</table>
+							we are assuming memory latency to be 100cycles
+						</div>
                           <br>
 						  
 					</div>
@@ -78,6 +144,30 @@
 			</div>
 		</div>
 		
+		<div class="container-md mb-2">
+			<div class="row">
+				<div class="col-md-12 py-2">
+					<div class="shadow container bg-light">
+						<br>
+						Total no. of Instructions = {{total_instructions}}
+						<br>
+						Total no. of Stalls = {{stalls}}
+						<br>
+						Miss Rate = {{missrate}}
+						<br>
+						Total Clock Cycles  = {{clocks}}
+						<br>
+						IPC = {{IPC}}
+						<br>
+						Stalled Instructions:
+						<br>
+						<div *ngFor="let line of stalled_inst; let i=index">
+							{{i}} &nbsp; {{line}}
+						</div>
+					</div>
+				</div>
+			</div>
+		</div>
 	</div>
     </body>
 </html>

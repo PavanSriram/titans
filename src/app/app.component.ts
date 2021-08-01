@@ -1,13 +1,44 @@
+import { hasInjectableFields } from '@angular/compiler-cli/src/ngtsc/metadata/src/util';
 import { Component } from '@angular/core';
 
 @Component({
   selector: 'app-root',
   templateUrl: './app.component.html',
   styleUrls: ['./app.component.css']
+  
 })
+
 export class AppComponent {
   title = 'titans';
   file:any;
+
+  //for cache
+  public l1size=256;
+  public l2size=1024;
+  public l1blksize=1;
+  public l2blksize=1;
+  public l1associativity=1;
+  public l2associativity=1;
+  public l1latency=1;
+  public l2latency=1;
+  public miss=0;
+  public missrate=0;
+  public memoperations=0;
+  public opencache=false;
+  public l1: number[][]=[ [] ];
+  public noofsetsl1=(this.l1size/this.l1blksize)/this.l1associativity;
+  public l2: number[][]=[ [] ];
+  public noofsetsl2=(this.l2size/this.l2blksize)/this.l2associativity;
+  //for pipelining
+  public is_forwarded=false;
+  public clocks=0;
+  public total_instructions=0;
+  public stalls=0;
+  public hazard=[-1, -1];
+  public prev_op = "";
+  public IPC = 0;
+  public stalled_inst = [""];
+
   public sometext='';
   public registers=[0];
   instructions = '';
@@ -32,6 +63,12 @@ export class AppComponent {
     for(let i=0;i<32;++i)
     this.registers.push(0);
   }
+  
+switch()
+{
+  this.opencache=!this.opencache;
+}
+
   fileChanged(e:any) {
       this.file = e.target.files[0];
   }
@@ -106,7 +143,7 @@ export class AppComponent {
             }
             else
             {
-              this.output.push('error in line'+i);
+              this.output.push('\n Error in line'+i);
               flag=false;
             }
           }
@@ -114,7 +151,7 @@ export class AppComponent {
     }
     if(i==this.code.length)
     {
-      this.output.push('\n did not find text keyword');
+      this.output.push('\n Error: Did not find text keyword');
       return 0;
     }
     return i;
@@ -138,7 +175,7 @@ export class AppComponent {
             }
             else
             {
-              this.output.push('error in line'+i);
+              this.output.push('\n Error in line'+i);
               flag=false;
             }
           }
@@ -146,21 +183,64 @@ export class AppComponent {
     }
     if(i==this.code.length)
     {
-      this.output.push('\n did not find data keyword');
+      this.output.push('\n Warning: Did not find data keyword');
       return 0;
     }
     return i;
   }
+
+  //pipelining without forwarding
+  pipeline_wf( operation:string, reg1:number, reg2:number, pointer:number){
+      this.total_instructions++;
+      if(reg1==this.hazard[1]||reg2==this.hazard[1]){
+        this.stalls+=2;
+        this.clocks+=2;
+        this.hazard.shift();
+        this.hazard.push(-1);
+        if(this.stalled_inst[this.stalled_inst.length-1]!=this.code[pointer])
+          this.stalled_inst.push(this.code[pointer]);
+      }
+      else if(reg1==this.hazard[0]||reg2==this.hazard[0]){
+        this.stalls+=1;
+        this.clocks+=1;
+        if(this.stalls%2==0){
+          this.hazard.shift();
+          this.hazard.push(-1);
+        }
+        if(this.stalled_inst[this.stalled_inst.length-1]!=this.code[pointer])
+          this.stalled_inst.push(this.code[pointer]);
+      }
+  }
+
+  //with forwarding
+  pipeline_f(operation:string, reg1:number, reg2:number, pointer:number){
+    this.total_instructions++;
+    if(reg1==this.hazard[1] || reg2==this.hazard[1]){
+      if(this.prev_op==="la"||this.prev_op==="lw"||this.prev_op==="sw"||operation==="bne"||operation==="beq"||operation==="blt"){
+        this.stalls+=1;
+        this.clocks+=1;
+        if(this.stalled_inst[this.stalled_inst.length-1]!=this.code[pointer])
+          this.stalled_inst.push(this.code[pointer]);
+      }
+    }
+  }
+
   run()
   {
-    // console.log(this.instructions);
+    for(let i=0;i<this.noofsetsl1;i++)
+    {
+      this.l1.push([-1]);
+    }
+    for(let i=0;i<this.noofsetsl2;i++)
+    {
+      this.l2.push([-1]);
+    }
     this.output=[''];
     this.temp='';
 
     // spliting into individual strings
     this.spliting_lines();
 
-    // console.log(this.code);
     //finding all the labels and storing them
     this.labels();
 
@@ -216,7 +296,6 @@ export class AppComponent {
         i++;
       }
     }
-    // console.log(this.variables);
     //finding .text
     flag=Boolean( this.finding_text());
     if(flag)
@@ -224,12 +303,12 @@ export class AppComponent {
         let pointer=this.find('main',this.names,this.index);
         if(pointer==-1)
         {
-          this.output.push("main not found"); 
+          this.output.push("Main not found"); 
         }
         pointer++;
+        this.clocks=4;
         while(pointer<this.code.length)
         {
-          // console.log(this.memory);
           let j=0;
             let k=j;
             while(++k&&k<this.code[pointer].length)
@@ -242,9 +321,11 @@ export class AppComponent {
             }
             if(k<this.code[pointer].length)
             continue;
+            this.clocks++;
             if(this.code[pointer][j]=='a')
             {
-                //add
+              
+                //addi
                 if(this.code[pointer][j+1]=='d'&&this.code[pointer][j+2]=='d' && this.code[pointer][j+3] == 'i')
                 {
                   j=j+4;
@@ -257,16 +338,25 @@ export class AppComponent {
                     b=Number(this.reg_name.get(this.temp));
                     this.temp=this.code[pointer].substring(j+8,j+11);
                     c = parseInt(this.temp, 10);
-                    // c=Number(this.reg_name.get(this.temp));
                     this.registers[a]=this.registers[b]+c;
-                    // console.log("value of c = " + c);
+                    
+                    if(!this.is_forwarded){
+                      this.pipeline_wf("addi", b, -2, pointer);
+                    }
+                    else{
+                      this.pipeline_f("addi", b, -2, pointer);
+                      this.prev_op="addi";
+                    }
+                    this.hazard.push(a);
+                    this.hazard.shift();
                   }
                   else
                   {
-                    this.output.push(' error in line '+pointer);
+                    this.output.push('\n Error in line '+pointer);
                     break;
                   }
                 }
+                //add
                 else if(this.code[pointer][j+1]=='d'&&this.code[pointer][j+2]=='d')
                 {
                   j=j+3;
@@ -280,10 +370,20 @@ export class AppComponent {
                     this.temp=this.code[pointer].substring(j+8,j+11);
                     c=Number(this.reg_name.get(this.temp));
                     this.registers[a]=this.registers[b]+this.registers[c];
+
+                    if(!this.is_forwarded){
+                      this.pipeline_wf("add", b, c, pointer);
+                    }
+                    else{
+                      this.pipeline_f("add", b, c, pointer);
+                      this.prev_op="add";
+                    }
+                    this.hazard.push(a);
+                    this.hazard.shift();  
                   }
                   else
                   {
-                    this.output.push(' error in line '+pointer);
+                    this.output.push('\n Error in line '+pointer);
                     break;
                   }
                 }
@@ -304,10 +404,20 @@ export class AppComponent {
                     this.temp=this.code[pointer].substring(j+8,j+11);
                     c=Number(this.reg_name.get(this.temp));
                     this.registers[a]=this.registers[b]-this.registers[c];
+
+                    if(!this.is_forwarded){
+                      this.pipeline_wf("sub", b, c, pointer);
+                    }
+                    else{
+                      this.pipeline_f("sub", b, c, pointer);
+                      this.prev_op="sub";
+                    }
+                    this.hazard.push(a);
+                    this.hazard.shift();  
                   }
                   else
                   {
-                    this.output.push(' error in line '+pointer);
+                    this.output.push('\n Error in line '+pointer);
                     break;
                   }
                 }
@@ -325,16 +435,26 @@ export class AppComponent {
                     this.temp=this.code[pointer].substring(j+8,this.code[pointer].length);
                     c=parseInt(this.temp) ;
                     this.registers[a]=Math.floor( this.registers[b]/Math.pow(2,c) );
+
+                    if(!this.is_forwarded){
+                      this.pipeline_wf("srl", b, -2, pointer);
+                    }
+                    else{
+                      this.pipeline_f("srl", b, -2, pointer);
+                    }
+                    this.hazard.push(a);
+                    this.hazard.shift();
                   }
                   else
                   {
-                    this.output.push('\n error in line '+pointer);
+                    this.output.push('\n Error in line '+pointer);
                     break;
                   }
                 }
                 else if(this.code[pointer][j+1] == 'w')
                 {
                   j=j+2;
+                  this.memoperations++;
                   let a:number,c:number=0;
                   if(this.code[pointer][j]=='$')
                   {
@@ -352,14 +472,58 @@ export class AppComponent {
 
                       this.temp=this.code[pointer].substring(j+1,j+4);//$t1
                       c=Number(this.reg_name.get(this.temp));//c=reg t1 index
+
+                      if(!this.is_forwarded){
+                        this.pipeline_wf("sw", a, -2, pointer);
+                      }
+                      else{
+                        this.pipeline_f("sw", a, -2, pointer);
+                        this.prev_op = "sw";
+                      }
+
+                      this.hazard.push(c);
+                      this.hazard.shift();
+
                       c=this.registers[c];//value of reg t1 aka memory index
                       c+=q/4;//add offset
-                      
-                    // }
+                      if(!this.has(this.l1,c))
+                    {
+                      if(!this.has(this.l2,c))
+                      {
+                        this.stalls+=this.l1latency+this.l2latency+99;
+                        this.clocks+=this.l1latency+this.l2latency+99;
+                        this.insert(c);
+                        this.miss++;
+                        this.hazard[0]=this.hazard[1]=-1;
+                      }
+                      else
+                      {
+                        this.stalls+=this.l1latency+this.l2latency-1;
+                        this.clocks+=this.l1latency+this.l2latency-1
+                        if(this.l1latency+this.l2latency-1==1)
+                        {
+                          this.hazard.shift();
+                          this.hazard.push(-1);
+                        }
+                        else if(this.l1latency+this.l2latency-1>=2)
+                        this.hazard[0]=this.hazard[1]=-1;
+                      }
+                    } 
+                    else
+                    {
+                      this.stalls+=this.l1latency-1;
+                      this.clocks+=this.l1latency-1;
+                      if(this.l1latency-1==1)
+                        {
+                          this.hazard.shift();
+                          this.hazard.push(-1);
+                        }
+                        else if(this.l1latency-1>=2)
+                        this.hazard[0]=this.hazard[1]=-1;
+                    }
+                    
                     this.memory[c] = String(this.registers[a]);
-                    // this.registers[a]=parseInt( this.memory[c],10);
                   }
-                  // console.log('sw' + this.memory[c]);
                 }
             }
             else if(this.code[pointer][j]=='m')
@@ -378,10 +542,20 @@ export class AppComponent {
                     this.temp=this.code[pointer].substring(j+8,j+11);
                     c=Number(this.reg_name.get(this.temp));
                     this.registers[a]=this.registers[b]*this.registers[c];
+
+                    if(!this.is_forwarded){
+                      this.pipeline_wf("mul", b, c, pointer);
+                    }
+                    else{
+                      this.pipeline_f("mul", b, c, pointer);
+                      this.prev_op = "mul";
+                    }
+                    this.hazard.push(a);
+                    this.hazard.shift();
                   }
                   else
                   {
-                    this.output.push('\n error in line '+pointer);
+                    this.output.push('\n Error in line '+pointer);
                     break;
                   }
                 }
@@ -402,10 +576,20 @@ export class AppComponent {
                     this.temp=this.code[pointer].substring(j+8,j+11);
                     c=Number(this.reg_name.get(this.temp));
                     this.registers[a]=Math.floor( this.registers[b]/this.registers[c]);
+
+                    if(!this.is_forwarded){
+                      this.pipeline_wf("div", b, c, pointer);
+                    }
+                    else{
+                      this.pipeline_f("div", b, c, pointer);
+                      this.prev_op = "div";
+                    }
+                    this.hazard.push(a);
+                    this.hazard.shift();
                   }
                   else
                   {
-                    this.output.push('\n error in line '+pointer);
+                    this.output.push('\n Error in line '+pointer);
                     break;
                   }
                 }
@@ -426,11 +610,25 @@ export class AppComponent {
                     this.temp=this.code[pointer].substring(j+8,this.code[pointer].length);
                     if(this.registers[a]!=this.registers[b])
                     pointer=this.find(this.temp,this.names,this.index);
-                    
+                                  
+                    if(!this.is_forwarded){
+                      this.pipeline_wf("bne", a, b, pointer);
+                    }
+                    else{
+                      this.pipeline_f("bne", a, b, pointer);
+                      this.prev_op = "bne";
+                    }
+                    this.stalled_inst.push(this.code[pointer+1]);
+                    this.stalls++;
+                    this.clocks++;
+                    this.hazard.push(-1);
+                    this.hazard.shift();
+                    this.hazard.push(-1);
+                    this.hazard.shift();
                   }
                   else
                   {
-                    this.output.push('\n error in line '+pointer);
+                    this.output.push('\n Error in line '+pointer);
                     break;
                   }
                 }
@@ -447,7 +645,21 @@ export class AppComponent {
                     this.temp=this.code[pointer].substring(j+8,this.code[pointer].length);
                     if(this.registers[a]==this.registers[b])
                     pointer=this.find(this.temp,this.names,this.index);
-                    
+
+                    if(!this.is_forwarded){
+                      this.pipeline_wf("beq", a, b, pointer);
+                    }
+                    else{
+                      this.pipeline_f("beq", a, b, pointer);
+                      this.prev_op = "beq";
+                    }
+                    this.stalled_inst.push(this.code[pointer+1]);
+                    this.stalls++;
+                    this.clocks++;
+                    this.hazard.push(-1);
+                    this.hazard.shift();
+                    this.hazard.push(-1);
+                    this.hazard.shift();
                   }
                 }
                   else if(this.code[pointer][j+1]=='l'&&this.code[pointer][j+2]=='t')
@@ -461,16 +673,29 @@ export class AppComponent {
                     this.temp=this.code[pointer].substring(j+4,j+7);
                     b=Number(this.reg_name.get(this.temp));
                     this.temp=this.code[pointer].substring(j+8,this.code[pointer].length);
-                    // console.log(this.registers[a]);
-                    // console.log(this.registers[b]);
+
+                    if(!this.is_forwarded){
+                      this.pipeline_wf("blt", a, b, pointer);
+                    }
+                    else{
+                      this.pipeline_f("blt", a, b, pointer);
+                      this.prev_op = "blt";
+                    }
+                    this.stalled_inst.push(this.code[pointer+1]);
+                    this.stalls++;
+                    this.clocks++;
+                    this.hazard.push(-1);
+                    this.hazard.shift();
+                    this.hazard.push(-1);
+                    this.hazard.shift();
+
                     if(this.registers[a]<this.registers[b]){
                       pointer=this.find(this.temp,this.names,this.index);
-                      // console.log(pointer);
                     }
                   }
                   else
                   {
-                    this.output.push('\n error in line '+pointer);
+                    this.output.push('\n Error in line '+pointer);
                     break;
                   }
                 }
@@ -484,6 +709,16 @@ export class AppComponent {
                 //jump label
                 this.temp=this.code[pointer].substring(j+1,this.code[pointer].length);
                 pointer=this.find(this.temp,this.names,this.index);
+
+                this.stalls++;
+                this.clocks++;
+                this.total_instructions++;
+                this.stalled_inst.push(this.code[pointer]);
+                this.prev_op = "j";
+                this.hazard.push(-1);
+                this.hazard.shift();
+                this.hazard.push(-1);
+                this.hazard.shift();
             }
             else if(this.code[pointer][j]=='l')
             {
@@ -493,6 +728,7 @@ export class AppComponent {
               if(this.code[pointer][j+1]=='w')
               {
                 j=j+2;
+                this.memoperations++;
                 let a:number=0,c:number;
                   if(this.code[pointer][j]=='$')
                   {
@@ -503,9 +739,13 @@ export class AppComponent {
                     {
                       this.temp=this.code[pointer].substring(j+4,this.code[pointer].length);
                       c=Number(this.variables.get(this.temp));
-                      // console.log(c);
-                      // console.log(this.temp);
-                      // console.log(parseInt( this.memory[c],10));
+                      if(!this.is_forwarded){
+                        this.pipeline_wf("lw", c, -2, pointer);
+                      }
+                      else{
+                        this.pipeline_f("lw", c, -2, pointer);
+                        this.prev_op = "lw";
+                      }
                     }
                     else
                     {
@@ -520,13 +760,60 @@ export class AppComponent {
 
                       this.temp=this.code[pointer].substring(j+1,j+4);//$t1
                       c=Number(this.reg_name.get(this.temp));//c=reg t1 index
-                      c=this.registers[c];//value of reg t1 aka memory index
+                      // c=this.registers[c];//value of reg t1 aka memory index
+                      if(!this.is_forwarded){
+                        this.pipeline_wf("lw", c, -2, pointer);
+                      }
+                      else{
+                        this.pipeline_f("lw", c, -2, pointer);
+                        this.prev_op = "lw";
+                      }
+                      this.hazard.push(a);
+                      this.hazard.shift();
+
                       c+=q/4;//add offset
-                      
+                      c = this.registers[c];
+                    }
+                    // checkl1
+                    // check l2
+                    // mem
+                    if(!this.has(this.l1,c))
+                    {
+                      if(!this.has(this.l2,c))
+                      {
+                        this.stalls+=this.l1latency+this.l2latency+99;
+                        this.clocks+=this.l1latency+this.l2latency+99;
+                        this.insert(c);
+                        this.miss++;
+                        this.hazard[0]=this.hazard[1]=-1;
+                      }
+                      else
+                      {
+                        this.stalls+=this.l1latency+this.l2latency-1;
+                        this.clocks+=this.l1latency+this.l2latency-1
+                        if(this.l1latency+this.l2latency-1==1)
+                        {
+                          this.hazard.shift();
+                          this.hazard.push(-1);
+                        }
+                        else if(this.l1latency+this.l2latency-1>=2)
+                        this.hazard[0]=this.hazard[1]=-1;
+                      }
+                    } 
+                    else
+                    {
+                      this.stalls+=this.l1latency-1;
+                      this.clocks+=this.l1latency-1;
+                      if(this.l1latency-1==1)
+                        {
+                          this.hazard.shift();
+                          this.hazard.push(-1);
+                        }
+                        else if(this.l1latency-1>=2)
+                        this.hazard[0]=this.hazard[1]=-1;
                     }
                     this.registers[a]=parseInt( this.memory[c],10);
                   }
-                  // console.log(this.registers[a]);
               }
               //la $t1,arr
               else if(this.code[pointer][j+1]=='a')
@@ -540,6 +827,11 @@ export class AppComponent {
                     this.temp=this.code[pointer].substring(j+4,this.code[pointer].length);
                     c=Number(this.variables.get(this.temp));
                     this.registers[a]=c;
+
+                    this.prev_op = "la";
+                    this.hazard.push(a);
+                    this.hazard.shift();
+                    this.total_instructions++;
                   }
               }
               else if(this.code[pointer][j+1]=='i')
@@ -553,29 +845,70 @@ export class AppComponent {
                     this.temp=this.code[pointer].substring(j+4,this.code[pointer].length);
                     c=parseInt(this.temp) ;
                     this.registers[a]=c;
+
+                    this.prev_op = "li";
+                    this.hazard.push(a);
+                    this.hazard.shift();
+                    this.total_instructions++;
                   }
                   else
                   {
-                    this.output.push('\n error in line '+pointer);
+                    this.output.push('\n Error in line '+pointer);
                     break;
                   }
                 }
             }
             else
             {
-              this.output.push('\n error in line '+pointer);
+              this.output.push('\n Error in line '+pointer);
                     break;
             }
             pointer++;
         }
     }
-    // console.log(this.memory);
-    let start = 1;
-    let end = parseInt(this.memory[this.memory.length-1], 10);
-    for(; start<=end; start++){
-      this.output.push(this.memory[start]);
+    
+    this.IPC = this.total_instructions/this.clocks;
+    this.missrate=this.miss/this.memoperations;
+    console.log(this.stalled_inst);
+  }
+
+has(l:number[][],n:number)
+{
+  for(let i=0;i<l.length;i++)
+  {
+    for(let j=0;j<l[i].length;j++)
+    {
+      if(l[i][j]==n)
+      return true;
     }
   }
+  return false;
+}
+insert(n:number)
+{
+  let j=n%this.noofsetsl1;
+  if(!this.has(this.l1,n))
+  if(this.l1[j].length<this.l1associativity)
+  {
+    this.l1[j].push(n);
+  }
+  else
+  {
+    this.l1[j].shift();
+    this.l1[j].push(n);
+  }
+  j=n%this.noofsetsl2;
+  if(!this.has(this.l2,n))
+  if(this.l2[j].length<this.l2associativity)
+  {
+    this.l2[j].push(n);
+  }
+  else
+  {
+    this.l2[j].shift();
+    this.l2[j].push(n);
+  }
+}
 
   //to find the labels position
   find(s:string,names:any,index:any)
@@ -595,12 +928,29 @@ export class AppComponent {
   {
     for(let i=0;i<32;++i)
     this.registers[i]=0;
+
+
+    //cache
+    this.miss=0;
+    this.l1=[ [] ];
+    this.l2=[ [] ];
+    //pipelining
+  this.stalls=0;
+  this.clocks=0;
+  this.hazard = [-1, -1];
+  this.is_forwarded=false;
+  this.prev_op = "";
+  this.IPC = 0;
+  this.stalled_inst = [""];
+
     this.instructions='';
     this.output=[''];
     this.code=[''];
     this.names=[''];
     this.index=[-1];
     this.file=null;
+    this.total_instructions=0;
+    this.stalls=0;
     this.memory=[""];
     this.variables=new Map(
       [
